@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Alejandro vs Ibuprofeno 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Segoe UI', sans-serif; }
+        
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            pointer-events: none;
+            user-select: none;
+        }
+
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #aaa; }
+        .stat { font-size: 24px; font-weight: bold; }
+        .label { font-size: 12px; color: #ccc; text-transform: uppercase; letter-spacing: 1px; }
+        
+        #bp-value { color: #4caf50; transition: color 0.3s; }
+
+        /* Pantallas finales */
+        .overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border-radius: 15px;
+            border: 2px solid white;
+            display: none;
+            z-index: 10;
+        }
+
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 20px;
+            cursor: pointer;
+            margin-top: 20px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        button:hover { background: #218838; }
+        button.retry { background: #dc3545; }
+        button.retry:hover { background: #c82333; }
+
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="label">Tiempo Sobrevivido</div>
+        <div class="stat"><span id="time-display">0</span>s <span style="font-size:14px; color:#888">/ 60s</span></div>
+        <br>
+        <div class="label">Presión Arterial</div>
+        <div class="stat" id="bp-value">120/80</div>
+    </div>
+
+    <div id="game-over" class="overlay">
+        <h1 style="color: #ff4444; margin: 0;">COLAPSO</h1>
+        <p style="font-size: 18px;">La presión subió demasiado.</p>
+        <h2 id="final-bp-text" style="color: red;"></h2>
+        <button class="retry" onclick="window.location.reload()">Reanimar a Alejandro</button>
+    </div>
+
+    <div id="game-win" class="overlay" style="border-color: gold; background: rgba(10,10,20,0.95);">
+        <h1 style="color: gold; text-shadow: 0 0 20px orange;">¡VICTORIA!</h1>
+        <p>Has sobrevivido 60 segundos.</p>
+        <p style="font-style: italic; color: #aaa;">"Eres un guerrero digno."</p>
+        <button onclick="window.location.reload()">Jugar Otra Vez</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- CONFIGURACIÓN BÁSICA ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x202025);
+        scene.fog = new THREE.Fog(0x202025, 20, 50);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 8, 15);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // --- LUCES ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 5);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- PISO ---
+        const gridHelper = new THREE.GridHelper(30, 30, 0x444444, 0x333333);
+        scene.add(gridHelper);
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -0.1;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // --- TEXTURAS DINÁMICAS (CANVAS) ---
+        function createTextTexture(text, bgColor, textColor) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, 256, 128);
+            ctx.fillStyle = textColor;
+            ctx.font = 'bold 40px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, 128, 64);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- JUGADOR: ALEJANDRO ---
+        const playerGroup = new THREE.Group();
+        scene.add(playerGroup);
+
+        // Materiales
+        const skinMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // Piel
+        const shirtMat = new THREE.MeshStandardMaterial({ 
+            color: 0x0044cc, 
+            map: createTextTexture('ALEJANDRO', '#0044cc', 'white') // Remera con nombre
+        });
+        const pantsMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+
+        // Cuerpo
+        const torsoGeo = new THREE.BoxGeometry(1.2, 1.5, 0.6);
+        const torso = new THREE.Mesh(torsoGeo, shirtMat);
+        torso.position.y = 2.25;
+        torso.castShadow = true;
+        playerGroup.add(torso);
+
+        // Cabeza (Esfera escalada para ser menos cachetona)
+        const headGeo = new THREE.SphereGeometry(0.5, 32, 32);
+        const head = new THREE.Mesh(headGeo, skinMat);
+        head.position.y = 3.3;
+        head.scale.set(0.85, 1, 0.9); // Afinada
+        head.castShadow = true;
+        playerGroup.add(head);
+
+        // Pelo
+        const hairGeo = new THREE.SphereGeometry(0.52, 32, 32);
+        const hairMat = new THREE.MeshStandardMaterial({ color: 0x221100 });
+        const hair = new THREE.Mesh(hairGeo, hairMat);
+        hair.position.y = 3.35;
+        hair.position.z = -0.05;
+        hair.scale.set(0.85, 0.8, 0.9);
+        playerGroup.add(hair);
+
+        // Piernas
+        const legGeo = new THREE.BoxGeometry(0.4, 1.5, 0.4);
+        const legL = new THREE.Mesh(legGeo, pantsMat);
+        legL.position.set(-0.3, 0.75, 0);
+        legL.castShadow = true;
+        playerGroup.add(legL);
+
+        const legR = new THREE.Mesh(legGeo, pantsMat);
+        legR.position.set(0.3, 0.75, 0);
+        legR.castShadow = true;
+        playerGroup.add(legR);
+
+        // Brazos
+        const armGeo = new THREE.BoxGeometry(0.3, 1.2, 0.3);
+        const armL = new THREE.Mesh(armGeo, skinMat);
+        armL.position.set(-0.85, 2.2, 0);
+        playerGroup.add(armL);
+        const armR = new THREE.Mesh(armGeo, skinMat);
+        armR.position.set(0.85, 2.2, 0);
+        playerGroup.add(armR);
+
+        // --- OBSTÁCULOS: IBUPROFENO ---
+        const pills = [];
+        const pillGeo = new THREE.CapsuleGeometry(0.4, 1, 4, 8); 
+        // Material de pastilla (creado proceduralmente con rotacion para que parezca bicolor)
+        // Truco: Usamos dos geometrias o un gradiente. Para simplificar en Three.js básico, haremos un grupo.
+
+        function createPill() {
+            const pillGroup = new THREE.Group();
+            
+            // Mitad Naranja
+            const topGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.6, 12);
+            const topCap = new THREE.SphereGeometry(0.4, 12, 12, 0, Math.PI * 2, 0, Math.PI/2);
+            const matOrange = new THREE.MeshStandardMaterial({ color: 0xff6600, roughness: 0.4 });
+            
+            const topCyl = new THREE.Mesh(topGeo, matOrange);
+            const topSphere = new THREE.Mesh(topCap, matOrange);
+            topSphere.position.y = 0.3;
+            
+            // Mitad Blanca
+            const botGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.6, 12);
+            const botCap = new THREE.SphereGeometry(0.4, 12, 12, 0, Math.PI * 2, 0, Math.PI/2);
+            const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+            
+            const botCyl = new THREE.Mesh(botGeo, matWhite);
+            const botSphere = new THREE.Mesh(botCap, matWhite);
+            botSphere.rotation.x = Math.PI; // Invertir esfera
+            botSphere.position.y = -0.3;
+
+            // Ensamblar
+            const topPart = new THREE.Group();
+            topPart.add(topCyl);
+            topPart.add(topSphere);
+            topPart.position.y = 0.3;
+
+            const botPart = new THREE.Group();
+            botPart.add(botCyl);
+            botPart.add(botSphere);
+            botPart.position.y = -0.3;
+
+            pillGroup.add(topPart);
+            pillGroup.add(botPart);
+
+            // Rotación aleatoria inicial
+            pillGroup.rotation.z = Math.random() * 0.5;
+            pillGroup.rotation.x = Math.random() * 0.5;
+
+            // Posición spawn
+            pillGroup.position.x = (Math.random() - 0.5) * 12; // Rango -6 a 6
+            pillGroup.position.y = 15; // Arriba
+            pillGroup.position.z = 0;
+
+            // Propiedades custom
+            pillGroup.velocity = 0.1 + (Math.random() * 0.1) + (gameScore * 0.005);
+            
+            scene.add(pillGroup);
+            return pillGroup;
+        }
+
+
+        // --- KRATOS (MODELADO PROCEDURAL) ---
+        const kratosGroup = new THREE.Group();
+        kratosGroup.visible = false;
+        scene.add(kratosGroup);
+
+        function buildKratos() {
+            // Cabeza (Piel pálida ceniza)
+            const headGeo = new THREE.SphereGeometry(2, 32, 32);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.6 });
+            const head = new THREE.Mesh(headGeo, headMat);
+            // Afinar cara (Escala Y)
+            head.scale.set(0.85, 1.1, 0.9); 
+            kratosGroup.add(head);
+
+            // Tatuaje (Torus deformado o simplemente pintado... usaremos geometrias rojas insertadas)
+            const tatGeo = new THREE.TorusGeometry(2.05, 0.1, 8, 20, 2); 
+            const tatMat = new THREE.MeshBasicMaterial({ color: 0xaa0000 });
+            const tat = new THREE.Mesh(tatGeo, tatMat);
+            tat.rotation.y = 1.5;
+            tat.rotation.z = 1.8;
+            tat.position.set(-0.1, 0.5, 0);
+            kratosGroup.add(tat);
+
+            // Barba (Cono negro invertido + Cajas)
+            const beardGeo = new THREE.ConeGeometry(1.8, 3, 32);
+            const beardMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+            const beard = new THREE.Mesh(beardGeo, beardMat);
+            beard.rotation.x = Math.PI; // Abajo
+            beard.position.y = -1.5;
+            beard.position.z = 0.2;
+            beard.scale.z = 0.6; // Aplanada
+            kratosGroup.add(beard);
+
+            // Ojos (Cajas negras hundidas)
+            const eyeGeo = new THREE.BoxGeometry(0.6, 0.2, 0.2);
+            const eyeL = new THREE.Mesh(eyeGeo, beardMat);
+            eyeL.position.set(-0.8, 0.2, 1.7);
+            eyeL.rotation.z = 0.3; // Ceño fruncido
+            kratosGroup.add(eyeL);
+
+            const eyeR = new THREE.Mesh(eyeGeo, beardMat);
+            eyeR.position.set(0.8, 0.2, 1.7);
+            eyeR.rotation.z = -0.3; // Ceño fruncido
+            kratosGroup.add(eyeR);
+
+            kratosGroup.position.set(0, 5, 8);
+            kratosGroup.lookAt(0, 6, 15); // Mirar a la cámara
+        }
+        buildKratos();
+
+        // --- LÓGICA DE JUEGO ---
+        let gameRunning = true;
+        let gameScore = 0; // Tiempo
+        let lastTime = 0;
+        let spawnTimer = 0;
+        
+        // Presión Arterial
+        let hits = 0;
+        const pressures = ["120/80", "130/85", "140/90", "160/100", "180/110", "220/140"];
+        const maxHits = 5;
+
+        // Input
+        const keys = { left: false, right: false };
+        window.addEventListener('keydown', e => {
+            if(e.key === 'ArrowLeft') keys.left = true;
+            if(e.key === 'ArrowRight') keys.right = true;
+        });
+        window.addEventListener('keyup', e => {
+            if(e.key === 'ArrowLeft') keys.left = false;
+            if(e.key === 'ArrowRight') keys.right = false;
+        });
+
+        function updateUI() {
+            const bp = pressures[Math.min(hits, 5)];
+            const bpEl = document.getElementById('bp-value');
+            bpEl.innerText = bp;
+            
+            if (hits === 0) bpEl.style.color = '#4caf50'; // Verde
+            else if (hits < 3) bpEl.style.color = '#ff9800'; // Naranja
+            else bpEl.style.color = '#ff4444'; // Rojo
+
+            document.getElementById('time-display').innerText = Math.floor(gameScore);
+        }
+
+        function gameOver() {
+            gameRunning = false;
+            document.getElementById('final-bp-text').innerText = pressures[5] + " mmHg";
+            document.getElementById('game-over').style.display = 'block';
+            
+            // Efecto dramático: Alejandro se cae (rota 90 grados)
+            playerGroup.rotation.x = -Math.PI / 2;
+            playerGroup.position.y = 0.5;
+        }
+
+        function gameWin() {
+            gameRunning = false;
+            document.getElementById('game-win').style.display = 'block';
+            document.getElementById('ui-layer').style.display = 'none';
+
+            // Limpiar escena
+            pills.forEach(p => scene.remove(p));
+            playerGroup.visible = false;
+
+            // MOSTRAR KRATOS
+            kratosGroup.visible = true;
+            
+            // Animar cámara hacia Kratos suavemente en el loop
+        }
+
+        function animate(time) {
+            requestAnimationFrame(animate);
+
+            const delta = (time - lastTime) / 1000;
+            lastTime = time;
+
+            if (!gameRunning) {
+                // Si ganamos, rotar un poco a Kratos o mover cámara
+                if (kratosGroup.visible) {
+                    kratosGroup.rotation.y = Math.sin(time * 0.001) * 0.2;
+                    renderer.render(scene, camera);
+                } else {
+                    renderer.render(scene, camera);
+                }
+                return;
+            }
+
+            // 1. Mover Jugador
+            const speed = 10 * delta;
+            if (keys.left && playerGroup.position.x > -6) {
+                playerGroup.position.x -= speed;
+                // Inclinación al mover
+                playerGroup.rotation.z = 0.1; 
+            } else if (keys.right && playerGroup.position.x < 6) {
+                playerGroup.position.x += speed;
+                playerGroup.rotation.z = -0.1;
+            } else {
+                playerGroup.rotation.z = 0;
+            }
+            
+            // Animación simple de caminar (subir y bajar)
+            playerGroup.position.y = Math.abs(Math.sin(time * 0.01)) * 0.1;
+
+            // 2. Spawning Pills
+            spawnTimer += delta;
+            // Más rápido cuanto más tiempo pasa
+            const spawnRate = Math.max(0.2, 1.0 - (gameScore * 0.01)); 
+            if (spawnTimer > spawnRate) {
+                pills.push(createPill());
+                spawnTimer = 0;
+            }
+
+            // 3. Actualizar Pills y Colisiones
+            for (let i = pills.length - 1; i >= 0; i--) {
+                const p = pills[i];
+                p.position.y -= (5 + (gameScore * 0.1)) * delta; // Caída
+                p.rotation.x += 2 * delta; // Rotación en aire
+
+                // Chequeo Suelo
+                if (p.position.y < -2) {
+                    scene.remove(p);
+                    pills.splice(i, 1);
+                    continue;
+                }
+
+                // Chequeo Colisión (Distancia simple)
+                // Alejandro mide aprox 3 de alto y 1.2 de ancho. Centro en X.
+                const dist = p.position.distanceTo(playerGroup.position);
+                // Ajuste de hitbox: si está cerca en X y bajo en Y
+                const dx = Math.abs(p.position.x - playerGroup.position.x);
+                const dy = p.position.y; 
+
+                if (dx < 1.0 && dy < 4 && dy > 0) {
+                    // ¡GOLPE!
+                    hits++;
+                    updateUI();
+                    
+                    // Flash rojo en pantalla
+                    document.body.style.backgroundColor = '#500';
+                    setTimeout(() => document.body.style.backgroundColor = '#111', 100);
+
+                    scene.remove(p);
+                    pills.splice(i, 1);
+
+                    if (hits >= maxHits) {
+                        gameOver();
+                    }
+                }
+            }
+
+            // 4. Tiempo
+            gameScore += delta;
+            document.getElementById('time-display').innerText = Math.floor(gameScore);
+
+            if (gameScore >= 60) {
+                gameWin();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Resize Handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate(0);
+
+    </script>
+</body>
+</html>
